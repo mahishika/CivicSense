@@ -1,0 +1,11 @@
+.env
+firebase-key.json
+gcs-key.json
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+*.egg-info/
+.venv/
+venv/
+civicsense_backend.py.backup

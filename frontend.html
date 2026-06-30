@@ -1,0 +1,1322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CivicSense</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          sage:  { 50:"#f4f6f1", 100:"#e3e9da", 200:"#c9d6ba", 300:"#aabd92", 500:"#728357", 600:"#5c6e45", 700:"#475636", 900:"#2b3420" },
+          stone: { 50:"#faf8f4", 100:"#f1ebe1", 200:"#e3d8c6", 300:"#cdbb9d", 500:"#9c8468", 600:"#7a6750", 700:"#5c4d3c", 900:"#332a20" },
+          peach: { 50:"#fdf2ec", 100:"#fbe4d6", 200:"#f5c8a8", 300:"#eea878", 500:"#d97f45", 700:"#a85f30" },
+          clay:  { 500:"#b65f4a", 700:"#8c4536" },
+          gold:  { 100:"#fbf3da", 500:"#d4a72c", 700:"#9c7d1f" }
+        },
+        fontFamily: { display: ["Fraunces", "serif"], body: ["Inter", "sans-serif"] },
+        boxShadow: { soft: "0 2px 14px -4px rgba(43,52,32,0.10)", lift: "0 12px 28px -8px rgba(43,52,32,0.18)" }
+      }
+    }
+  };
+</script>
+<style>
+  body { font-family: 'Inter', sans-serif; background: #faf8f4; color: #332a20; }
+  .font-display { font-family: 'Fraunces', serif; }
+  .card-lift { transition: transform .18s ease, box-shadow .18s ease; }
+  .card-lift:hover { transform: translateY(-2px); box-shadow: 0 12px 28px -8px rgba(43,52,32,0.18); }
+  .pulse-ring { position: relative; }
+  .pulse-ring::before {
+    content: ""; position: absolute; inset: -6px; border-radius: 999px;
+    border: 2px solid #d97f45; animation: pulse 1.4s ease-out infinite;
+  }
+  @keyframes pulse { 0% { opacity: .8; transform: scale(.9); } 100% { opacity: 0; transform: scale(1.4); } }
+  .fade-in { animation: fadeIn .35s ease both; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .step-line { background: repeating-linear-gradient(to right, #cdbb9d 0, #cdbb9d 4px, transparent 4px, transparent 9px); height: 2px; }
+  .step-line.done { background: #728357; }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cdbb9d; border-radius: 8px; }
+  #toast-zone { position: fixed; bottom: 20px; right: 20px; z-index: 50; display: flex; flex-direction: column; gap: 8px; }
+
+  .auth-blob { filter: blur(2px); }
+  .auth-input { transition: box-shadow .15s ease, border-color .15s ease; }
+  .auth-input:focus { box-shadow: 0 0 0 4px rgba(114,131,87,0.15); }
+  .role-card { transition: all .15s ease; cursor: pointer; }
+  .role-card.active { border-color: #728357; background: #f4f6f1; }
+
+  .trust-ring { transform: rotate(-90deg); }
+  .trust-ring circle { transition: stroke-dashoffset 0.6s ease; }
+
+  .urgency-bar-track { background: #f1ebe1; border-radius: 999px; height: 6px; overflow: hidden; }
+  .urgency-bar-fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; }
+
+  .suggest-box { position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: white; border: 1px solid #e3d8c6; border-radius: 12px; box-shadow: 0 8px 24px -8px rgba(43,52,32,0.2); z-index: 30; max-height: 220px; overflow-y: auto; }
+  .suggest-item { padding: 10px 14px; font-size: 13px; cursor: pointer; border-bottom: 1px solid #f1ebe1; }
+  .suggest-item:last-child { border-bottom: none; }
+  .suggest-item:hover { background: #f4f6f1; }
+
+  .agent-step { transition: all .3s ease; }
+  .agent-step.active { background: #f4f6f1; }
+  .agent-step.done .agent-dot { background: #728357; }
+
+  .spin { animation: spinA .7s linear infinite; }
+  @keyframes spinA { to { transform: rotate(360deg); } }
+
+  .zone-pill { transition: all .15s ease; cursor: pointer; }
+  .zone-pill.active { background: #475636; color: white; }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+<div id="toast-zone"></div>
+
+<script>
+// ===========================================================================
+// CONFIG
+// ===========================================================================
+var API_URL = "http://localhost:8000";
+var BACKEND_AVAILABLE = false;
+
+// ===========================================================================
+// Global state
+// ===========================================================================
+var currentUser = null;
+var currentTab = "report";
+var voiceListening = false;
+var voiceTranscript = "";
+var recognition = null;
+var capturedCoords = null;
+var capturedAddress = "";
+var capturedZone = null;          // the matched jurisdiction zone object for this report's location
+var capturedImageFile = null;
+var capturedImagePreview = null;
+var allReports = [];
+var reportAnonymous = false;
+var locationConfirmed = false;
+
+// Local demo "database" — used whenever BACKEND_AVAILABLE is false
+var localUsersDB = {};
+var localReportsDB = [];
+var localIdCounter = 1;
+
+var LANGUAGES = [
+  { code: "en-IN", label: "English" },
+  { code: "hi-IN", label: "हिंदी" },
+  { code: "bn-IN", label: "বাংলা" },
+  { code: "ta-IN", label: "தமிழ்" },
+  { code: "te-IN", label: "తెలుగు" },
+  { code: "mr-IN", label: "मराठी" },
+  { code: "gu-IN", label: "ગુજરાતી" },
+  { code: "kn-IN", label: "ಕನ್ನಡ" },
+  { code: "pa-IN", label: "ਪੰਜਾਬੀ" }
+];
+
+// ---------------------------------------------------------------------------
+// JURISDICTION ZONES
+// This list is fetched fresh from GET /zones the moment the backend is
+// reachable (loadZones, called from checkBackend below) — that keeps it
+// byte-for-byte identical to the backend's list, which is what actually
+// makes location-based routing work end to end. The array below is only a
+// fallback used in pure demo mode (no backend running at all), so the app
+// still functions standalone for local testing.
+// ---------------------------------------------------------------------------
+var JURISDICTION_ZONES = [
+  { id: "zone-sector4", name: "Sector 4, Noida", lat: 28.6160, lng: 77.2110 },
+  { id: "zone-sector5", name: "Sector 5, Noida", lat: 28.6145, lng: 77.2090 },
+  { id: "zone-sector6", name: "Sector 6, Noida", lat: 28.6120, lng: 77.2060 },
+  { id: "zone-lajpatnagar", name: "Lajpat Nagar, Delhi", lat: 28.5677, lng: 77.2433 },
+  { id: "zone-cp", name: "Connaught Place, Delhi", lat: 28.6315, lng: 77.2167 }
+];
+
+// Demo locality directory for the address autocomplete (used in both demo
+// mode and backend-connected mode — it's just a friendly picklist of named
+// spots; the actual zone assignment always comes from matchJurisdictionZone()
+// against real lat/lng, never from this list's zoneId directly, so it stays
+// correct even if this list goes slightly stale).
+var DEMO_LOCALITIES = [
+  { label: "Sector 4 Main Market, Noida", lat: 28.6160, lng: 77.2110 },
+  { label: "Sector 4 Bus Stop, Noida", lat: 28.6168, lng: 77.2102 },
+  { label: "Sector 5 Park Entrance, Noida", lat: 28.6145, lng: 77.2090 },
+  { label: "Sector 5 Metro Gate 2, Noida", lat: 28.6150, lng: 77.2095 },
+  { label: "Sector 6 Primary School, Noida", lat: 28.6120, lng: 77.2060 },
+  { label: "Sector 6 Main Road, Noida", lat: 28.6125, lng: 77.2070 },
+  { label: "Lajpat Nagar Metro Gate 2, Delhi", lat: 28.5677, lng: 77.2433 },
+  { label: "Connaught Place Block A, Delhi", lat: 28.6315, lng: 77.2167 }
+];
+
+var PLACES_API_KEY = "";
+
+var AGENT_PIPELINE = [
+  { key: "report", label: "ReportAgent", desc: "Reading description & classifying issue type" },
+  { key: "sentiment", label: "SentimentAgent", desc: "Detecting urgency & tone (any language)" },
+  { key: "geo", label: "GeoAgent", desc: "Matching your area to the right authority" },
+  { key: "verify", label: "VerifyAgent", desc: "Running credibility checks" },
+  { key: "priority", label: "PriorityAgent", desc: "Scoring urgency & assigning department" }
+];
+
+var CATEGORY_ICON = {
+  pothole: "🕳️", water_leakage: "💧", streetlight: "💡", garbage: "🗑️",
+  drainage: "🌧️", illegal_construction: "🏗️", stray_animal: "🐾", other: "📍"
+};
+
+var STATUS_META = {
+  submitted:       { tone: "stone", label: "Submitted",   step: 0 },
+  in_progress:     { tone: "peach", label: "In progress", step: 1 },
+  pending_review:  { tone: "peach", label: "Under review", step: 2 },
+  resolved:        { tone: "sage",  label: "Resolved",     step: 3 },
+  reopened:        { tone: "clay",  label: "Reopened",     step: 1 },
+  duplicate:       { tone: "stone", label: "Duplicate",    step: 0 }
+};
+
+var URGENCY_COLOR = { critical: "#b65f4a", high: "#d97f45", medium: "#d4a72c", low: "#728357" };
+
+// ===========================================================================
+// Helpers
+// ===========================================================================
+function render(html) { document.getElementById("app").innerHTML = html; }
+
+function pillClasses(tone) {
+  if (tone === "sage") return "bg-sage-100 text-sage-700";
+  if (tone === "peach") return "bg-peach-100 text-peach-700";
+  if (tone === "clay") return "bg-clay-500/10 text-clay-700";
+  if (tone === "gold") return "bg-gold-100 text-gold-700";
+  return "bg-stone-100 text-stone-600";
+}
+
+function showToast(message, kind) {
+  var bg = kind === "error" ? "bg-clay-700" : (kind === "success" ? "bg-sage-700" : "bg-stone-900");
+  var node = document.createElement("div");
+  node.className = "fade-in " + bg + " text-white text-sm px-4 py-3 rounded-xl shadow-lift max-w-xs";
+  node.textContent = message;
+  document.getElementById("toast-zone").appendChild(node);
+  setTimeout(function () {
+    node.style.transition = "opacity .3s ease";
+    node.style.opacity = "0";
+    setTimeout(function () { node.remove(); }, 300);
+  }, 3200);
+}
+
+function logoHTML(light) {
+  var textCls = light ? "text-white" : "text-stone-900";
+  return '' +
+    '<div class="flex items-center gap-2.5">' +
+      '<div class="w-9 h-9 rounded-xl bg-sage-700 flex items-center justify-center text-white text-sm font-display tracking-tight">CS</div>' +
+      '<span class="font-display text-lg ' + textCls + ' tracking-tight">CivicSense</span>' +
+    '</div>';
+}
+
+function trustTier(score) {
+  if (score >= 80) return { label: "Highly Trusted", tone: "sage", icon: "🌟" };
+  if (score >= 60) return { label: "Trusted", tone: "sage", icon: "✓" };
+  if (score >= 35) return { label: "Building Trust", tone: "gold", icon: "↗" };
+  return { label: "New Reporter", tone: "stone", icon: "🌱" };
+}
+
+function trustRingHTML(score, size) {
+  size = size || 56;
+  var r = (size / 2) - 5;
+  var circumference = 2 * Math.PI * r;
+  var offset = circumference - (score / 100) * circumference;
+  var color = score >= 60 ? "#728357" : (score >= 35 ? "#d4a72c" : "#9c8468");
+  return '' +
+    '<div class="relative inline-flex items-center justify-center" style="width:' + size + 'px;height:' + size + 'px;">' +
+      '<svg class="trust-ring" width="' + size + '" height="' + size + '">' +
+        '<circle cx="' + (size / 2) + '" cy="' + (size / 2) + '" r="' + r + '" stroke="#f1ebe1" stroke-width="5" fill="none" />' +
+        '<circle cx="' + (size / 2) + '" cy="' + (size / 2) + '" r="' + r + '" stroke="' + color + '" stroke-width="5" fill="none" stroke-linecap="round" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '" />' +
+      '</svg>' +
+      '<span class="absolute font-display text-sm" style="color:' + color + '">' + score + '</span>' +
+    '</div>';
+}
+
+function guessCategory(text) {
+  var t = (text || "").toLowerCase();
+  if (t.indexOf("pothole") > -1 || t.indexOf("road") > -1 || t.indexOf("गड्ढ") > -1) return "pothole";
+  if (t.indexOf("water") > -1 || t.indexOf("leak") > -1 || t.indexOf("pipe") > -1) return "water_leakage";
+  if (t.indexOf("light") > -1 || t.indexOf("streetlight") > -1) return "streetlight";
+  if (t.indexOf("garbage") > -1 || t.indexOf("waste") > -1 || t.indexOf("trash") > -1) return "garbage";
+  if (t.indexOf("drain") > -1 || t.indexOf("flood") > -1) return "drainage";
+  if (t.indexOf("construction") > -1 || t.indexOf("illegal") > -1) return "illegal_construction";
+  if (t.indexOf("dog") > -1 || t.indexOf("animal") > -1 || t.indexOf("stray") > -1) return "stray_animal";
+  return "other";
+}
+
+function titleFromCategory(cat) {
+  var map = {
+    pothole: "Pothole / road damage", water_leakage: "Water leakage", streetlight: "Streetlight not working",
+    garbage: "Garbage / waste issue", drainage: "Drainage / flooding", illegal_construction: "Illegal construction",
+    stray_animal: "Stray animal concern", other: "Civic issue"
+  };
+  return map[cat] || "Civic issue";
+}
+
+function guessUrgency(category, description, duplicateCount) {
+  var base = { pothole: 55, water_leakage: 50, drainage: 60, streetlight: 45, garbage: 40, illegal_construction: 35, stray_animal: 50, other: 30 }[category] || 30;
+  var t = (description || "").toLowerCase();
+  var sensitive = ["school", "hospital", "clinic", "college", "metro", "station"];
+  var isSensitive = sensitive.some(function (kw) { return t.indexOf(kw) > -1; });
+  var urgentWords = ["urgent", "emergency", "danger", "accident", "immediately"];
+  var isUrgent = urgentWords.some(function (w) { return t.indexOf(w) > -1; });
+  var score = base + (isSensitive ? 20 : 0) + (isUrgent ? 15 : 0) + Math.min(duplicateCount * 8, 24);
+  score = Math.max(0, Math.min(100, score));
+  var level = score >= 75 ? "critical" : score >= 55 ? "high" : score >= 35 ? "medium" : "low";
+  return { urgency_score: score, priority_level: level, sensitive_zone: isSensitive };
+}
+
+// ---------------------------------------------------------------------------
+// JURISDICTION MATCHING — the actual routing decision on the frontend side
+// (mirrors what GeoAgent does on the backend, so demo mode behaves
+// identically to backend-connected mode). This is called automatically the
+// instant lat/lng become known, either from live GPS or from picking a
+// suggestion — the citizen never types or selects an area twice.
+// ---------------------------------------------------------------------------
+function matchJurisdictionZone(lat, lng) {
+  var best = JURISDICTION_ZONES[0], bestDist = Infinity;
+  JURISDICTION_ZONES.forEach(function (z) {
+    var d = Math.sqrt(Math.pow(z.lat - lat, 2) + Math.pow(z.lng - lng, 2));
+    if (d < bestDist) { bestDist = d; best = z; }
+  });
+  return best;
+}
+
+function zoneNameById(zoneId) {
+  var z = JURISDICTION_ZONES.filter(function (zz) { return zz.id === zoneId; })[0];
+  return z ? z.name : "Unassigned area";
+}
+
+// ===========================================================================
+// API layer
+// ===========================================================================
+function checkBackend(onDone) {
+  fetch(API_URL + "/health", { method: "GET" })
+    .then(function (res) {
+      BACKEND_AVAILABLE = res.ok;
+      if (BACKEND_AVAILABLE) { loadZones(onDone); } else { onDone(); }
+    })
+    .catch(function () { BACKEND_AVAILABLE = false; onDone(); });
+}
+
+// Pull the live zone list from the backend so the frontend's jurisdiction
+// data can never drift out of sync with what the backend actually routes
+// against. Falls back silently to the hardcoded JURISDICTION_ZONES above if
+// this fails for any reason (keeps demo mode working offline).
+function loadZones(onDone) {
+  fetch(API_URL + "/zones")
+    .then(function (res) { return res.json(); })
+    .then(function (zones) {
+      if (Array.isArray(zones) && zones.length) JURISDICTION_ZONES = zones;
+      onDone();
+    })
+    .catch(function () { onDone(); });
+}
+
+function emailToStableUid(email, role) {
+  var key = (email || "").trim().toLowerCase();
+  if (!key) return null;
+  var hash = 0, i;
+  for (i = 0; i < key.length; i++) { hash = ((hash << 5) - hash) + key.charCodeAt(i); hash |= 0; }
+  return "local-" + role + "-" + Math.abs(hash);
+}
+
+function apiSignup(name, email, password, role, zoneId, onDone) {
+  if (!BACKEND_AVAILABLE) {
+    // Reuse the same uid for the same email so logging back in finds the
+    // same account (and the same reports/trust score) instead of minting a
+    // brand new disconnected uid every time.
+    var stableUid = emailToStableUid(email, role);
+    var uid = stableUid || ("local-" + role + "-" + Date.now());
+    if (localUsersDB[uid]) {
+      localUsersDB[uid].name = name || localUsersDB[uid].name;
+      if (role === "admin" && zoneId) localUsersDB[uid].zoneId = zoneId;
+    } else {
+      localUsersDB[uid] = { uid: uid, name: name, role: role, trust_score: 50, zoneId: zoneId || null };
+    }
+    var u = localUsersDB[uid];
+    onDone({ uid: uid, role: role, trust_score: u.trust_score, zoneId: u.zoneId });
+    return;
+  }
+  fetch(API_URL + "/auth/signup", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name, email: email, password: password, role: role, zone_id: zoneId })
+  }).then(function (res) {
+    if (!res.ok) return res.json().then(function (err) { throw new Error(err.detail || "Signup failed"); });
+    return res.json();
+  })
+    .then(onDone)
+    .catch(function (err) {
+      showToast(err.message || "Could not reach server — using offline mode", "error");
+      var stableUid = emailToStableUid(email, role);
+      var uid = stableUid || ("local-" + role + "-" + Date.now());
+      if (localUsersDB[uid]) {
+        localUsersDB[uid].name = name || localUsersDB[uid].name;
+        if (role === "admin" && zoneId) localUsersDB[uid].zoneId = zoneId;
+      } else {
+        localUsersDB[uid] = { uid: uid, name: name, role: role, trust_score: 50, zoneId: zoneId || null };
+      }
+      var u2 = localUsersDB[uid];
+      onDone({ uid: uid, role: role, trust_score: u2.trust_score, zoneId: u2.zoneId });
+    });
+}
+
+function apiSubmitReport(payload, imageFile, onDone) {
+  if (!BACKEND_AVAILABLE) {
+    var cat = guessCategory(payload.description);
+    var dupCount = localReportsDB.filter(function (r) {
+      return r.category === cat && r.status !== "resolved" &&
+        Math.abs(r.lat - payload.lat) < 0.002 && Math.abs(r.lng - payload.lng) < 0.002;
+    }).length;
+    var urgency = guessUrgency(cat, payload.description, dupCount);
+    var zone = matchJurisdictionZone(payload.lat, payload.lng);
+    var deptMap = { pothole: "Roads & Infrastructure", water_leakage: "Water Supply Dept.", streetlight: "Electrical Dept.", garbage: "Sanitation Dept.", drainage: "Drainage & Sewage Dept.", illegal_construction: "Town Planning", stray_animal: "Animal Control", other: "General Municipal Dept." };
+
+    var newReport = {
+      id: "local-" + (localIdCounter++),
+      title: titleFromCategory(cat),
+      category: cat,
+      description: payload.description || "(reported via photo)",
+      status: "submitted",
+      anonymous: payload.anonymous,
+      user_id: payload.user_id,
+      lat: payload.lat, lng: payload.lng, address: payload.address || "",
+      zone_id: zone.id,
+      zone_name: zone.name,
+      priority: { priority_level: urgency.priority_level, urgency_score: urgency.urgency_score, escalate_to_department: deptMap[cat], sensitive_zone: urgency.sensitive_zone },
+      duplicate_count: dupCount,
+      community_votes: 0,
+      created_at: Date.now()
+    };
+    localReportsDB.unshift(newReport);
+
+    if (payload.user_id && localUsersDB[payload.user_id] && (payload.description || "").length > 15) {
+      localUsersDB[payload.user_id].trust_score = Math.min(100, (localUsersDB[payload.user_id].trust_score || 50) + 1);
+    }
+
+    setTimeout(function () { onDone({ report_id: newReport.id, report: newReport }); }, 400);
+    return;
+  }
+  var form = new FormData();
+  form.append("payload", JSON.stringify(payload));
+  if (imageFile) form.append("image", imageFile);
+  fetch(API_URL + "/reports/submit", { method: "POST", body: form })
+    .then(function (res) { return res.json(); })
+    .then(onDone)
+    .catch(function () { apiSubmitReport(payload, imageFile, onDone); });
+}
+
+// Used by the citizen Track tab — always scoped to the logged-in user
+// (or anonymous-only for guests), regardless of zone, since a citizen needs
+// to see every report they filed no matter which area it landed in.
+function apiListMyReports(onDone) {
+  if (!BACKEND_AVAILABLE) {
+    var mine = currentUser.guest
+      ? localReportsDB.filter(function (r) { return r.anonymous; })
+      : localReportsDB.filter(function (r) { return r.user_id === currentUser.uid || r.anonymous; });
+    var sorted = mine.slice().sort(function (a, b) { return (b.created_at || 0) - (a.created_at || 0); });
+    onDone(sorted);
+    return;
+  }
+  var qs = currentUser.guest ? "" : ("?user_id=" + encodeURIComponent(currentUser.uid));
+  fetch(API_URL + "/reports" + qs)
+    .then(function (res) { return res.json(); })
+    .then(onDone)
+    .catch(function () { onDone([]); });
+}
+
+// Used by the Admin dashboard — ALWAYS scoped to the admin's own zone_id,
+// so one authority never sees another zone's complaints.
+function apiListZoneReports(zoneId, onDone) {
+  if (!BACKEND_AVAILABLE) {
+    var inZone = localReportsDB.filter(function (r) { return r.zone_id === zoneId; });
+    var sorted = inZone.slice().sort(function (a, b) {
+      return (b.priority ? b.priority.urgency_score : 0) - (a.priority ? a.priority.urgency_score : 0);
+    });
+    onDone(sorted);
+    return;
+  }
+  fetch(API_URL + "/reports?zone_id=" + encodeURIComponent(zoneId))
+    .then(function (res) { return res.json(); })
+    .then(onDone)
+    .catch(function () { onDone([]); });
+}
+
+function apiMarkInProgress(reportId, onDone) {
+  if (!BACKEND_AVAILABLE || String(reportId).indexOf("local-") === 0) {
+    var j;
+    for (j = 0; j < localReportsDB.length; j++) if (localReportsDB[j].id === reportId) localReportsDB[j].status = "in_progress";
+    onDone({ status: "in_progress" });
+    return;
+  }
+  var qs = currentUser ? ("?admin_uid=" + encodeURIComponent(currentUser.uid)) : "";
+  fetch(API_URL + "/reports/" + reportId + "/admin/mark_in_progress" + qs, { method: "POST" })
+    .then(function (res) { return res.json(); }).then(onDone).catch(function () { onDone(null); });
+}
+
+function apiMarkResolved(reportId, afterImageFile, onDone) {
+  if (!BACKEND_AVAILABLE || String(reportId).indexOf("local-") === 0) {
+    setTimeout(function () {
+      var confident = afterImageFile ? Math.random() > 0.25 : Math.random() > 0.6;
+      var finalStatus = confident ? "resolved" : "pending_review";
+      var j, reportedUser = null;
+      for (j = 0; j < localReportsDB.length; j++) {
+        if (localReportsDB[j].id === reportId) {
+          localReportsDB[j].status = finalStatus;
+          reportedUser = localReportsDB[j].user_id;
+        }
+      }
+      if (finalStatus === "resolved" && reportedUser && localUsersDB[reportedUser]) {
+        localUsersDB[reportedUser].trust_score = Math.min(100, (localUsersDB[reportedUser].trust_score || 50) + 3);
+      }
+      onDone({ ai_result: { final_status: finalStatus, confidence: confident ? 0.82 : 0.45, verdict: confident ? "fixed" : "inconclusive" } });
+    }, 1200);
+    return;
+  }
+  var form = new FormData();
+  form.append("after_image", afterImageFile);
+  if (currentUser) form.append("admin_uid", currentUser.uid);
+  fetch(API_URL + "/reports/" + reportId + "/admin/resolve", { method: "POST", body: form })
+    .then(function (res) { return res.json(); }).then(onDone).catch(function () { onDone(null); });
+}
+
+function apiReconcile(reportId, body, onDone) {
+  if (!BACKEND_AVAILABLE || String(reportId).indexOf("local-") === 0) {
+    var finalStatus = body.admin_confirmed ? "resolved" : "reopened";
+    var j;
+    for (j = 0; j < localReportsDB.length; j++) {
+      if (localReportsDB[j].id === reportId) localReportsDB[j].status = finalStatus;
+    }
+    setTimeout(function () { onDone({ final_status: finalStatus }); }, 300);
+    return;
+  }
+  var qs = currentUser ? ("?admin_uid=" + encodeURIComponent(currentUser.uid)) : "";
+  fetch(API_URL + "/reports/" + reportId + "/reconcile" + qs, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  }).then(function (res) { return res.json(); }).then(onDone).catch(function () { onDone(null); });
+}
+
+function apiGetStats(zoneId, onDone) {
+  if (!BACKEND_AVAILABLE) {
+    var inZone = localReportsDB.filter(function (r) { return r.zone_id === zoneId; });
+    var total = inZone.length;
+    var resolved = inZone.filter(function (r) { return r.status === "resolved"; }).length;
+    var inProgress = inZone.filter(function (r) { return r.status === "in_progress"; }).length;
+    var pending = inZone.filter(function (r) { return r.status === "submitted" || r.status === "pending_review"; }).length;
+    var critical = inZone.filter(function (r) { return r.priority && r.priority.priority_level === "critical"; }).length;
+    onDone({ total: total, resolved: resolved, in_progress: inProgress, pending: pending, critical: critical });
+    return;
+  }
+  fetch(API_URL + "/stats?zone_id=" + encodeURIComponent(zoneId))
+    .then(function (res) { return res.json(); }).then(onDone).catch(function () { onDone({}); });
+}
+
+// ===========================================================================
+// AUTH SCREEN
+// ===========================================================================
+var authRole = "citizen";
+var authMode = "signup";
+var authZoneId = "";
+
+function zonePickerHTML() {
+  var html = '<div class="grid grid-cols-1 gap-2">';
+  JURISDICTION_ZONES.forEach(function (z) {
+    var active = z.id === authZoneId;
+    html += '<div class="zone-pill ' + (active ? "active" : "border border-stone-200 text-stone-700") + ' rounded-xl px-3.5 py-2.5 text-sm flex items-center gap-2" data-zone="' + z.id + '">' +
+      '<span>📍</span><span>' + z.name + '</span>' +
+      '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function renderAuthScreen() {
+  var html = '' +
+    '<div class="min-h-screen flex items-center justify-center bg-stone-50 px-4 py-10 relative overflow-hidden">' +
+      '<div class="auth-blob absolute -top-32 -right-32 w-96 h-96 rounded-full bg-sage-100"></div>' +
+      '<div class="auth-blob absolute -bottom-40 -left-24 w-80 h-80 rounded-full bg-peach-100"></div>' +
+      '<div class="auth-blob absolute top-1/3 left-1/4 w-40 h-40 rounded-full bg-sage-50"></div>' +
+
+      '<div class="relative z-10 w-full max-w-md">' +
+        '<div class="flex flex-col items-center text-center mb-7">' +
+          '<div class="w-14 h-14 rounded-2xl bg-sage-700 flex items-center justify-center text-white text-xl font-display shadow-lift mb-3">CS</div>' +
+          '<h1 class="font-display text-3xl text-stone-900">CivicSense</h1>' +
+          '<p class="text-sm text-stone-500 mt-1.5 max-w-xs">Report civic issues, track the fix, and verify it actually happened.</p>' +
+        '</div>' +
+
+        '<div class="bg-white rounded-3xl shadow-lift border border-stone-100 p-7 sm:p-8 fade-in">' +
+          '<div class="flex items-center justify-center gap-1 mb-6 bg-stone-100 rounded-xl p-1 text-sm">' +
+            '<button id="mode-signup" class="flex-1 py-2 rounded-lg font-medium transition ' + (authMode === "signup" ? "bg-white shadow-soft text-sage-700" : "text-stone-500") + '">Sign up</button>' +
+            '<button id="mode-login" class="flex-1 py-2 rounded-lg font-medium transition ' + (authMode === "login" ? "bg-white shadow-soft text-sage-700" : "text-stone-500") + '">Log in</button>' +
+          '</div>' +
+
+          '<p class="text-xs font-medium text-stone-400 uppercase tracking-wide mb-2.5">I am a</p>' +
+          '<div class="grid grid-cols-2 gap-3 mb-6">' +
+            '<div id="role-citizen" class="role-card border-2 rounded-2xl px-3 py-3.5 text-center ' + (authRole === "citizen" ? "active border-sage-500" : "border-stone-200") + '">' +
+              '<div class="text-2xl mb-1">🧑</div>' +
+              '<p class="text-sm font-medium text-stone-800">Citizen</p>' +
+              '<p class="text-[11px] text-stone-400 mt-0.5">Report &amp; track issues</p>' +
+            '</div>' +
+            '<div id="role-admin" class="role-card border-2 rounded-2xl px-3 py-3.5 text-center ' + (authRole === "admin" ? "active border-sage-500" : "border-stone-200") + '">' +
+              '<div class="text-2xl mb-1">🏛️</div>' +
+              '<p class="text-sm font-medium text-stone-800">Authority</p>' +
+              '<p class="text-[11px] text-stone-400 mt-0.5">Resolve &amp; manage</p>' +
+            '</div>' +
+          '</div>' +
+
+          '<form id="auth-form" class="space-y-3.5">' +
+            (authMode === "signup" ? '<div><label class="text-xs font-medium text-stone-500 mb-1 block">Full name</label><input id="auth-name" required placeholder="e.g. Aisha Khan" class="auth-input w-full border border-stone-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-sage-500 transition" /></div>' : '') +
+            '<div><label class="text-xs font-medium text-stone-500 mb-1 block">Email</label><input id="auth-email" required type="email" placeholder="you@example.com" class="auth-input w-full border border-stone-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-sage-500 transition" /></div>' +
+            '<div><label class="text-xs font-medium text-stone-500 mb-1 block">Password</label><input id="auth-password" required type="password" placeholder="••••••••" class="auth-input w-full border border-stone-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-sage-500 transition" /></div>' +
+            ((authMode === "signup" && authRole === "admin") ?
+              '<div>' +
+                '<label class="text-xs font-medium text-stone-500 mb-2 block">Jurisdiction — which area will you manage?</label>' +
+                '<div id="zone-picker">' + zonePickerHTML() + '</div>' +
+                '<p class="text-[11px] text-stone-400 mt-1.5">Every report filed inside this area will come straight to you — no manual matching needed.</p>' +
+              '</div>'
+            : '') +
+            '<button id="auth-submit-btn" type="submit" class="w-full bg-sage-700 text-white rounded-xl py-3 text-sm font-semibold hover:bg-sage-900 transition shadow-soft mt-2">' + (authMode === "signup" ? "Create account" : "Log in") + '</button>' +
+          '</form>' +
+
+          (authRole === "admin" ? (
+          '<p class="text-[11px] text-stone-400 mt-5 text-center leading-relaxed">Authority accounts are tied to one jurisdiction and cannot be anonymous.</p>'
+          ) : '') +
+        '</div>' +
+        '<p class="text-center text-xs text-stone-400 mt-5">Vibe2Ship · Community Hero · 9 AI agents at work</p>' +
+      '</div>' +
+    '</div>';
+
+  render(html);
+
+  document.getElementById("mode-signup").onclick = function () { authMode = "signup"; renderAuthScreen(); };
+  document.getElementById("mode-login").onclick = function () { authMode = "login"; renderAuthScreen(); };
+  document.getElementById("role-citizen").onclick = function () { authRole = "citizen"; renderAuthScreen(); };
+  document.getElementById("role-admin").onclick = function () { authRole = "admin"; renderAuthScreen(); };
+
+  var zonePicker = document.getElementById("zone-picker");
+  if (zonePicker) {
+    var pills = zonePicker.querySelectorAll(".zone-pill");
+    pills.forEach(function (pill) {
+      pill.onclick = function () {
+        authZoneId = pill.getAttribute("data-zone");
+        renderAuthScreen();
+      };
+    });
+  }
+
+  document.getElementById("auth-form").onsubmit = function (e) {
+    e.preventDefault();
+    var nameField = document.getElementById("auth-name");
+    var name = nameField ? nameField.value : (authMode === "login" ? "Welcome back" : "Demo User");
+    var email = document.getElementById("auth-email").value;
+    var password = document.getElementById("auth-password").value;
+
+    if (authMode === "signup" && authRole === "admin" && !authZoneId) {
+      showToast("Please select the jurisdiction you'll be managing.", "error");
+      return;
+    }
+
+    var btn = document.getElementById("auth-submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Please wait…";
+
+    apiSignup(name, email, password, authRole, authZoneId, function (result) {
+      currentUser = {
+        uid: result.uid, role: result.role || authRole,
+        name: name || (email ? email.split("@")[0] : "Demo User"),
+        email: email, zoneId: result.zoneId || result.zone_id || authZoneId || null,
+        trust_score: result.trust_score || 50
+      };
+      currentTab = "report";
+      showToast("Welcome, " + currentUser.name + " 👋", "success");
+      renderMainApp();
+    });
+  };
+}
+
+// ===========================================================================
+// MAIN APP SHELL
+// ===========================================================================
+function renderMainApp() {
+  var isAdmin = currentUser.role === "admin";
+
+  var navHTML = "";
+  if (!isAdmin) {
+    navHTML = '' +
+      '<nav class="flex gap-1 bg-stone-100 rounded-xl p-1 text-sm">' +
+        '<button id="nav-report" class="px-3.5 py-1.5 rounded-lg font-medium transition ' + (currentTab === "report" ? "bg-white shadow-soft text-sage-700" : "text-stone-500") + '">Report</button>' +
+        '<button id="nav-track" class="px-3.5 py-1.5 rounded-lg font-medium transition ' + (currentTab === "track" ? "bg-white shadow-soft text-sage-700" : "text-stone-500") + '">Track</button>' +
+      '</nav>';
+  }
+
+  var trustBadge = "";
+  if (!isAdmin && !currentUser.guest) {
+    var tier = trustTier(currentUser.trust_score || 50);
+    trustBadge = '<span class="text-xs px-2 py-1 rounded-full ' + pillClasses(tier.tone) + ' flex items-center gap-1">' + tier.icon + ' ' + (currentUser.trust_score || 50) + '</span>';
+  }
+
+  var jurisdictionBadge = "";
+  if (isAdmin && currentUser.zoneId) {
+    jurisdictionBadge = '<span class="text-xs px-2.5 py-1 rounded-full bg-sage-100 text-sage-700 flex items-center gap-1">📍 ' + zoneNameById(currentUser.zoneId) + '</span>';
+  }
+
+  var shellHTML = '' +
+    '<div class="min-h-screen">' +
+      '<header class="border-b border-stone-100 bg-white/80 backdrop-blur px-6 py-4 flex items-center justify-between sticky top-0 z-10">' +
+        logoHTML(false) +
+        '<div class="flex items-center gap-4">' +
+          navHTML +
+          jurisdictionBadge +
+          trustBadge +
+          '<div class="flex items-center gap-2">' +
+            '<div class="w-7 h-7 rounded-full bg-peach-200 flex items-center justify-center text-xs font-display text-peach-700">' + currentUser.name.charAt(0).toUpperCase() + '</div>' +
+            '<span class="text-sm text-stone-500 hidden sm:inline">' + currentUser.name + '</span>' +
+          '</div>' +
+          '<button id="logout-btn" class="text-xs text-stone-400 underline">Log out</button>' +
+        '</div>' +
+      '</header>' +
+      '<main id="main-content" class="p-6"></main>' +
+    '</div>';
+
+  render(shellHTML);
+
+  document.getElementById("logout-btn").onclick = function () { currentUser = null; stopTrackPolling(); renderAuthScreen(); };
+  if (!isAdmin) {
+    document.getElementById("nav-report").onclick = function () { currentTab = "report"; renderMainApp(); };
+    document.getElementById("nav-track").onclick = function () { currentTab = "track"; renderMainApp(); };
+  }
+
+  if (isAdmin) { stopTrackPolling(); renderAdminDashboard(); }
+  else if (currentTab === "report") { stopTrackPolling(); renderReportForm(); }
+  else { renderTrackingView(); startTrackPolling(); }
+}
+
+// ===========================================================================
+// CITIZEN — REPORT FORM
+// ===========================================================================
+var reportLang = "en-IN";
+var addressQuery = "";
+
+function renderReportForm() {
+  var langOptions = "";
+  var i;
+  for (i = 0; i < LANGUAGES.length; i++) {
+    var lang = LANGUAGES[i];
+    langOptions += '<option value="' + lang.code + '" ' + (lang.code === reportLang ? "selected" : "") + '>' + lang.label + '</option>';
+  }
+
+  var imagePreviewHTML = capturedImagePreview
+    ? '<img src="' + capturedImagePreview + '" class="mt-2 w-full h-36 object-cover rounded-xl border border-stone-200" />'
+    : '';
+
+  var trustHintHTML = "";
+  if (!currentUser.guest) {
+    var t = currentUser.trust_score || 50;
+    var tier = trustTier(t);
+    trustHintHTML = '' +
+      '<div class="flex items-center gap-3 bg-sage-50 border border-sage-100 rounded-2xl p-3.5 mb-5">' +
+        trustRingHTML(t, 44) +
+        '<div class="flex-1">' +
+          '<p class="text-sm font-medium text-stone-800">' + tier.icon + ' ' + tier.label + '</p>' +
+          '<p class="text-[11px] text-stone-500">Accurate reports raise your score &amp; skip extra verification</p>' +
+        '</div>' +
+      '</div>';
+  }
+
+  // Location card — once locked in, shows exactly which authority this
+  // will route to. This is the citizen-facing proof the routing worked,
+  // and there's deliberately no re-typing required to get here.
+  var locationStatusHTML = "";
+  if (locationConfirmed) {
+    var zoneLine = capturedZone ? '<p class="text-[11px] text-sage-600 mt-1">✓ Will be routed to: <strong>' + capturedZone.name + '</strong> authority</p>' : "";
+    locationStatusHTML =
+      '<div class="bg-sage-50 border border-sage-100 rounded-xl px-3.5 py-2.5">' +
+        '<div class="flex items-center gap-2 text-sage-700 text-sm">' +
+          '<span>📍</span><span class="flex-1">' + capturedAddress + '</span>' +
+          '<button id="change-location-btn" type="button" class="text-xs underline text-stone-500">Change</button>' +
+        '</div>' +
+        zoneLine +
+      '</div>';
+  }
+
+  var html = '' +
+    '<div class="max-w-xl mx-auto fade-in">' +
+      '<div class="mb-5">' +
+        '<h2 class="font-display text-2xl text-stone-900">Report an issue</h2>' +
+        '<p class="text-sm text-stone-500 mt-1">Speak, type, or attach a photo — in your language.</p>' +
+      '</div>' +
+
+      trustHintHTML +
+
+      '<div class="bg-white rounded-2xl border border-stone-100 shadow-soft p-6">' +
+        '<div class="flex items-center justify-between mb-4">' +
+          '<label class="text-sm text-stone-700 flex items-center gap-2 cursor-pointer">' +
+            '<input type="checkbox" id="report-anonymous" ' + (reportAnonymous ? "checked" : "") + ' class="accent-sage-700 w-4 h-4" /> Report anonymously' +
+          '</label>' +
+          '<select id="report-lang" class="text-sm border border-stone-200 rounded-lg px-2 py-1.5 bg-white">' + langOptions + '</select>' +
+        '</div>' +
+
+        '<div class="relative mb-2">' +
+          '<textarea id="report-text" rows="4" placeholder="Describe the issue — or use the mic below. Any Indian language works." class="w-full border border-stone-200 rounded-xl px-3.5 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300 focus:border-sage-500 transition resize-none">' + voiceTranscript + '</textarea>' +
+        '</div>' +
+
+        '<button id="report-voice-btn" type="button" class="mb-4 text-sm px-4 py-2.5 rounded-xl border flex items-center gap-2 transition ' + (voiceListening ? "bg-peach-50 border-peach-200 text-peach-700" : "border-stone-200 text-stone-700 hover:border-sage-300") + '">' +
+          '<span class="' + (voiceListening ? "pulse-ring" : "") + ' inline-flex w-2 h-2 rounded-full ' + (voiceListening ? "bg-peach-500" : "bg-stone-300") + '"></span>' +
+          (voiceListening ? "Listening… tap to stop" : "🎙 Speak instead") +
+        '</button>' +
+
+        '<div class="mb-4">' +
+          '<label class="text-sm text-stone-700 block mb-1.5">Photo evidence</label>' +
+          '<label for="report-image" class="flex items-center justify-center gap-2 border-2 border-dashed border-stone-200 rounded-xl py-4 text-sm text-stone-500 cursor-pointer hover:border-sage-300 hover:text-sage-700 transition">📷 <span>Tap to attach a photo</span></label>' +
+          '<input type="file" accept="image/*" id="report-image" class="hidden" />' +
+          imagePreviewHTML +
+        '</div>' +
+
+        '<div class="mb-2">' +
+          '<label class="text-sm text-stone-700 block mb-1.5">Area</label>' +
+          (locationConfirmed ? locationStatusHTML : '' +
+            '<div class="flex gap-2 mb-2">' +
+              '<button id="use-live-location-btn" type="button" class="flex-1 text-sm border border-stone-200 rounded-xl py-2.5 hover:border-sage-300 hover:bg-sage-50 transition flex items-center justify-center gap-1.5 text-stone-700">📡 Use my current location</button>' +
+            '</div>' +
+            '<p class="text-[11px] text-stone-400 mb-2 text-center">— or pick your area below —</p>' +
+            '<div class="relative">' +
+              '<input id="address-search" type="text" placeholder="Type your area / landmark — e.g. Sector 5 Metro Gate 2" value="' + addressQuery + '" autocomplete="off" class="auth-input w-full border border-stone-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-sage-500 transition" />' +
+              '<div id="address-suggest-box"></div>' +
+            '</div>' +
+            '<p class="text-[11px] text-stone-400 mt-1.5">Pick a suggestion from the list — your area\'s authority is matched automatically, no manual selection needed after that.</p>'
+          ) +
+        '</div>' +
+
+        '<button id="report-submit-btn" class="w-full bg-sage-700 text-white rounded-xl py-3 text-sm font-medium hover:bg-sage-900 transition shadow-soft mt-5">Submit report</button>' +
+
+        '<div id="agent-pipeline-box" class="hidden mt-5 bg-stone-50 border border-stone-100 rounded-2xl p-4"></div>' +
+      '</div>' +
+    '</div>';
+
+  document.getElementById("main-content").innerHTML = html;
+
+  document.getElementById("report-lang").onchange = function (e) { reportLang = e.target.value; };
+
+  document.getElementById("report-image").onchange = function (e) {
+    capturedImageFile = e.target.files[0];
+    if (capturedImageFile) {
+      var reader = new FileReader();
+      reader.onload = function (ev) { capturedImagePreview = ev.target.result; renderReportForm(); };
+      reader.readAsDataURL(capturedImageFile);
+    }
+  };
+
+  if (!locationConfirmed) {
+    document.getElementById("use-live-location-btn").onclick = function () {
+      var btn = document.getElementById("use-live-location-btn");
+      btn.innerHTML = '<span class="inline-block w-3.5 h-3.5 border-2 border-stone-300 border-t-sage-700 rounded-full spin"></span> Locating…';
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          function (pos) {
+            capturedCoords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            capturedAddress = "Live GPS location captured";
+            // Zone match happens immediately, automatically — no typing needed.
+            capturedZone = matchJurisdictionZone(capturedCoords.lat, capturedCoords.lng);
+            locationConfirmed = true;
+            renderReportForm();
+            showToast("Location captured — matched to " + capturedZone.name, "success");
+          },
+          function () {
+            showToast("Couldn't access GPS — please pick your area from the list instead.", "error");
+            btn.innerHTML = "📡 Use my current location";
+          }
+        );
+      } else {
+        showToast("GPS not available on this device — please pick your area below.", "error");
+      }
+    };
+
+    var searchInput = document.getElementById("address-search");
+    searchInput.oninput = function (e) {
+      addressQuery = e.target.value;
+      if (addressQuery.length < 2) {
+        document.getElementById("address-suggest-box").innerHTML = "";
+        return;
+      }
+      var matches = DEMO_LOCALITIES.filter(function (loc) {
+        return loc.label.toLowerCase().indexOf(addressQuery.toLowerCase()) > -1;
+      });
+      renderAddressSuggestions(matches);
+    };
+  } else {
+    var changeBtn = document.getElementById("change-location-btn");
+    if (changeBtn) changeBtn.onclick = function () {
+      locationConfirmed = false; capturedCoords = null; capturedAddress = ""; capturedZone = null; addressQuery = "";
+      renderReportForm();
+    };
+  }
+
+  document.getElementById("report-voice-btn").onclick = function () {
+    if (voiceListening) {
+      if (recognition) recognition.stop();
+      voiceListening = false;
+      renderReportForm();
+      return;
+    }
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { showToast("Voice input isn't supported in this browser — please type instead.", "error"); return; }
+    recognition = new SpeechRecognition();
+    recognition.lang = reportLang;
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onresult = function (event) {
+      var text = "";
+      var i;
+      for (i = 0; i < event.results.length; i++) text += event.results[i][0].transcript;
+      voiceTranscript = text;
+      var textarea = document.getElementById("report-text");
+      if (textarea) textarea.value = text;
+    };
+    recognition.onend = function () { voiceListening = false; renderReportForm(); };
+    recognition.onerror = function () { voiceListening = false; renderReportForm(); };
+
+    recognition.start();
+    voiceListening = true;
+    renderReportForm();
+  };
+
+  document.getElementById("report-submit-btn").onclick = handleReportSubmit;
+}
+
+// Selecting a suggestion locks in lat/lng + zone IMMEDIATELY — this is the
+// fix for "had to type the area again": once you click a result here, the
+// form switches straight to the locked location card and the zone match
+// is already done, no further input needed.
+function renderAddressSuggestions(matches) {
+  var box = document.getElementById("address-suggest-box");
+  if (!matches.length) { box.innerHTML = ""; return; }
+  var html = '<div class="suggest-box">';
+  matches.forEach(function (m, idx) {
+    html += '<div class="suggest-item" data-idx="' + idx + '">📍 ' + m.label + '</div>';
+  });
+  html += '</div>';
+  box.innerHTML = html;
+  box.style.position = "relative";
+  var items = box.querySelectorAll(".suggest-item");
+  items.forEach(function (item, idx) {
+    item.onclick = function () {
+      var loc = matches[idx];
+      capturedCoords = { lat: loc.lat, lng: loc.lng };
+      capturedAddress = loc.label;
+      capturedZone = matchJurisdictionZone(loc.lat, loc.lng);
+      locationConfirmed = true;
+      addressQuery = "";
+      renderReportForm();
+      showToast("Area set — matched to " + capturedZone.name, "success");
+    };
+  });
+}
+
+function handleReportSubmit() {
+  var textarea = document.getElementById("report-text");
+  var anonymous = document.getElementById("report-anonymous").checked;
+  var description = textarea.value.trim();
+
+  if (!description && !capturedImageFile) {
+    showToast("Please add a description or a photo.", "error");
+    return;
+  }
+  if (!capturedCoords) {
+    showToast("Please share your area (live GPS or pick from the list) first.", "error");
+    return;
+  }
+
+  var payload = {
+    user_id: anonymous ? null : currentUser.uid,
+    anonymous: anonymous,
+    description: description,
+    lat: capturedCoords.lat,
+    lng: capturedCoords.lng,
+    address: capturedAddress,
+    language: reportLang
+  };
+
+  var box = document.getElementById("agent-pipeline-box");
+  box.className = "mt-5 bg-stone-50 border border-stone-100 rounded-2xl p-4 fade-in";
+  var stepsHTML = "";
+  AGENT_PIPELINE.forEach(function (a, idx) {
+    stepsHTML += '<div class="agent-step flex items-center gap-2.5 px-2.5 py-2 rounded-lg" id="astep-' + idx + '">' +
+      '<span class="agent-dot w-2 h-2 rounded-full bg-stone-300 shrink-0"></span>' +
+      '<div class="flex-1"><p class="text-xs font-medium text-stone-700">' + a.label + '</p><p class="text-[10px] text-stone-400">' + a.desc + '</p></div>' +
+      '<span class="astep-check text-xs text-sage-700"></span>' +
+      '</div>';
+  });
+  box.innerHTML = '<p class="text-xs font-medium text-stone-500 mb-2">🤖 Running AI agent pipeline…</p>' + stepsHTML;
+
+  var btn = document.getElementById("report-submit-btn");
+  btn.disabled = true;
+  btn.textContent = "Processing…";
+
+  var step = 0;
+  var stepTimer = setInterval(function () {
+    if (step > 0) {
+      var prev = document.getElementById("astep-" + (step - 1));
+      if (prev) { prev.classList.add("done"); prev.querySelector(".astep-check").textContent = "✓"; }
+    }
+    if (step < AGENT_PIPELINE.length) {
+      var cur = document.getElementById("astep-" + step);
+      if (cur) cur.classList.add("active");
+      step++;
+    } else {
+      clearInterval(stepTimer);
+    }
+  }, 450);
+
+  apiSubmitReport(payload, capturedImageFile, function (result) {
+    clearInterval(stepTimer);
+    AGENT_PIPELINE.forEach(function (a, idx) {
+      var el = document.getElementById("astep-" + idx);
+      if (el) { el.classList.add("done"); var chk = el.querySelector(".astep-check"); if (chk) chk.textContent = "✓"; }
+    });
+
+    setTimeout(function () {
+      capturedImageFile = null;
+      capturedImagePreview = null;
+      capturedCoords = null;
+      capturedAddress = "";
+      capturedZone = null;
+      voiceTranscript = "";
+      locationConfirmed = false;
+      var zoneName = (result.report && result.report.zone_name) || "your local authority";
+      showToast("Report submitted — sent straight to " + zoneName + ".", "success");
+      currentTab = "track";
+      renderMainApp();
+    }, 700);
+  });
+}
+
+// ===========================================================================
+// CITIZEN — TRACKING VIEW
+// ===========================================================================
+function statusStepperHTML(step) {
+  var labels = ["Submitted", "In progress", "Review", "Resolved"];
+  var html = '<div class="mt-3">';
+  html += '<div class="flex items-center">';
+  var i;
+  for (i = 0; i < 4; i++) {
+    var doneClass = i <= step ? "bg-sage-700 text-white" : "bg-stone-100 text-stone-400";
+    html += '<div class="flex-1 flex items-center">';
+    html += '<div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium shrink-0 ' + doneClass + '">' + (i + 1) + '</div>';
+    if (i < 3) html += '<div class="flex-1 step-line ' + (i < step ? "done" : "") + '"></div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  html += '<div class="flex mt-1">';
+  for (i = 0; i < 4; i++) {
+    html += '<div class="flex-1 text-[10px] text-stone-400" style="text-align:' + (i === 0 ? "left" : (i === 3 ? "right" : "center")) + ';">' + labels[i] + '</div>';
+  }
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+// NOTE: Citizens never see "urgency" labels (critical/high/medium/low) on
+// their own reports — that's internal triage data for authorities only.
+// Showing a citizen "low urgency" on something that feels serious to them
+// reads as dismissive. They get a reassurance line + the authority their
+// report was routed to instead.
+
+function renderTrackingView() {
+  document.getElementById("main-content").innerHTML =
+    '<div class="max-w-2xl mx-auto space-y-3">' +
+      '<div class="h-20 bg-stone-100 rounded-xl animate-pulse"></div>' +
+      '<div class="h-20 bg-stone-100 rounded-xl animate-pulse"></div>' +
+    '</div>';
+
+  apiListMyReports(function (myReports) {
+    var itemsHTML = "";
+    var i;
+
+    if (myReports.length === 0) {
+      itemsHTML = '' +
+        '<div class="text-center py-16">' +
+          '<div class="text-4xl mb-3">🌱</div>' +
+          '<p class="text-sm text-stone-500">No reports yet — once you submit one, it\'ll show up here with live status.</p>' +
+        '</div>';
+    }
+
+    for (i = 0; i < myReports.length; i++) {
+      var r = myReports[i];
+      var meta = STATUS_META[r.status] || { tone: "stone", label: r.status || "Pending", step: 0 };
+      var icon = CATEGORY_ICON[r.category] || "📍";
+
+      var extraNote = "";
+      if (r.status === "resolved") {
+        extraNote = '<p class="text-xs text-sage-700 mt-3 flex items-center gap-1">✓ Verified fixed — before/after photos confirmed by AI + admin. <span class="text-stone-400">+trust score</span></p>';
+      } else if (r.status === "pending_review") {
+        extraNote = '<p class="text-xs text-peach-700 mt-3">AI wasn\'t fully confident on the fix — an admin is double-checking.</p>';
+      } else if (r.status === "submitted") {
+        extraNote = '<p class="text-xs text-stone-400 mt-3">Your report has been logged and routed to the right department.</p>';
+      }
+
+      var routedLine = r.zone_name
+        ? '<p class="text-[11px] text-stone-400 mt-0.5">📍 ' + (r.address || "Location shared") + ' · routed to ' + r.zone_name + ' authority</p>'
+        : (r.address ? '<p class="text-[11px] text-stone-400 mt-0.5">📍 ' + r.address + '</p>' : '');
+      var anonTag = r.anonymous ? '<span class="text-[10px] text-stone-400 ml-1.5">🕵️ anonymous</span>' : '';
+
+      itemsHTML += '' +
+        '<div class="bg-white border border-stone-100 rounded-2xl p-5 shadow-soft card-lift">' +
+          '<div class="flex items-start gap-3">' +
+            '<div class="w-10 h-10 rounded-xl bg-stone-50 flex items-center justify-center text-lg shrink-0">' + icon + '</div>' +
+            '<div class="flex-1">' +
+              '<div class="flex items-center justify-between flex-wrap gap-1.5">' +
+                '<span class="font-medium text-stone-900 text-sm">' + (r.title || r.category || "Issue") + anonTag + '</span>' +
+                '<span class="text-xs px-2.5 py-1 rounded-full ' + pillClasses(meta.tone) + '">' + meta.label + '</span>' +
+              '</div>' +
+              '<p class="text-xs text-stone-500 mt-0.5">' + (r.description || "") + '</p>' +
+              routedLine +
+            '</div>' +
+          '</div>' +
+          statusStepperHTML(meta.step) +
+          extraNote +
+        '</div>';
+    }
+
+    document.getElementById("main-content").innerHTML = '' +
+      '<div class="max-w-2xl mx-auto fade-in">' +
+        '<div class="flex items-center justify-between mb-5">' +
+          '<h2 class="font-display text-2xl text-stone-900">Your reports</h2>' +
+          '<button id="refresh-track-btn" class="text-xs text-sage-700 border border-sage-200 rounded-lg px-3 py-1.5 hover:bg-sage-50 transition flex items-center gap-1.5">🔄 Refresh status</button>' +
+        '</div>' +
+        '<div class="space-y-3">' + itemsHTML + '</div>' +
+      '</div>';
+
+    var refreshBtn = document.getElementById("refresh-track-btn");
+    if (refreshBtn) {
+      refreshBtn.onclick = function () {
+        refreshBtn.textContent = "Refreshing…";
+        renderTrackingView();
+      };
+    }
+  });
+}
+
+// Auto-poll the track view every 8s while the citizen is looking at it, so
+// a status change made by an authority (resolve, in-progress, reconcile)
+// shows up without the citizen needing to manually switch tabs or reload.
+var trackPollTimer = null;
+function startTrackPolling() {
+  stopTrackPolling();
+  trackPollTimer = setInterval(function () {
+    if (currentUser && currentUser.role !== "admin" && currentTab === "track") {
+      renderTrackingView();
+    } else {
+      stopTrackPolling();
+    }
+  }, 8000);
+}
+function stopTrackPolling() {
+  if (trackPollTimer) { clearInterval(trackPollTimer); trackPollTimer = null; }
+}
+
+// ===========================================================================
+// ADMIN — DASHBOARD
+// (Urgency labels and scores are shown here ONLY — this is the internal
+//  triage view for authorities, not citizen-facing. Everything below is
+//  scoped to currentUser.zoneId, the jurisdiction the admin signed up for.)
+// ===========================================================================
+var adminFilter = "all";
+
+function renderAdminDashboard() {
+  document.getElementById("main-content").innerHTML =
+    '<div class="max-w-4xl mx-auto space-y-3">' +
+      '<div class="h-24 bg-stone-100 rounded-xl animate-pulse"></div>' +
+      '<div class="h-20 bg-stone-100 rounded-xl animate-pulse"></div>' +
+    '</div>';
+
+  if (!currentUser.zoneId) {
+    document.getElementById("main-content").innerHTML =
+      '<div class="max-w-4xl mx-auto text-center py-16">' +
+        '<div class="text-3xl mb-2">⚠️</div>' +
+        '<p class="text-sm text-stone-500">No jurisdiction is set on this account — sign out and sign up again as Authority, selecting your area.</p>' +
+      '</div>';
+    return;
+  }
+
+  apiListZoneReports(currentUser.zoneId, function (reports) {
+    allReports = reports;
+    drawAdminList();
+  });
+}
+
+function adminStatsHTML() {
+  var total = allReports.length;
+  var resolved = 0, pending = 0, critical = 0, i;
+  for (i = 0; i < allReports.length; i++) {
+    if (allReports[i].status === "resolved") resolved++;
+    if (allReports[i].status === "pending_review") pending++;
+    if (allReports[i].priority && allReports[i].priority.priority_level === "critical") critical++;
+  }
+  function statCard(label, value, tone) {
+    return '<div class="bg-white border border-stone-100 rounded-2xl p-4 shadow-soft flex-1">' +
+      '<p class="text-2xl font-display text-' + tone + '">' + value + '</p>' +
+      '<p class="text-xs text-stone-500 mt-1">' + label + '</p></div>';
+  }
+  return '<div class="flex gap-3 mb-5">' +
+    statCard("Total reports", total, "stone-900") +
+    statCard("Resolved", resolved, "sage-700") +
+    statCard("Pending review", pending, "peach-700") +
+    statCard("Critical priority", critical, "clay-700") +
+    '</div>';
+}
+
+function drawAdminList() {
+  var filtered = [], i;
+  for (i = 0; i < allReports.length; i++) {
+    var r = allReports[i];
+    if (adminFilter === "all" || (r.priority && r.priority.priority_level === adminFilter)) filtered.push(r);
+  }
+  filtered.sort(function (a, b) {
+    var ua = a.priority ? a.priority.urgency_score : 0;
+    var ub = b.priority ? b.priority.urgency_score : 0;
+    return ub - ua;
+  });
+
+  var itemsHTML = "";
+  if (filtered.length === 0) {
+    itemsHTML = '<div class="text-center py-12"><div class="text-3xl mb-2">📭</div><p class="text-sm text-stone-500">No complaints in this filter yet for your jurisdiction.</p></div>';
+  }
+
+  for (i = 0; i < filtered.length; i++) {
+    var r = filtered[i];
+    var meta = STATUS_META[r.status] || { tone: "stone", label: r.status || "Pending" };
+    var icon = CATEGORY_ICON[r.category] || "📍";
+    var urgency = r.priority ? r.priority.urgency_score : 0;
+    var level = r.priority ? r.priority.priority_level : "low";
+    var color = URGENCY_COLOR[level] || "#9c8468";
+
+    var priorityBadge = '<span class="text-xs px-2.5 py-1 rounded-full font-medium" style="background:' + color + '1a;color:' + color + '">' + level + '</span>';
+    var escalateNote = r.priority && r.priority.escalate_to_department ? '<p class="text-xs text-stone-400 mt-1">→ ' + r.priority.escalate_to_department + (r.priority.sensitive_zone ? " · ⚠️ sensitive zone" : "") + '</p>' : "";
+    var addressLine = r.address ? '<p class="text-[11px] text-stone-400 mt-0.5">📍 ' + r.address + '</p>' : '';
+    var urgencyBar = '<div class="urgency-bar-track mt-2 mb-1" style="max-width:140px;"><div class="urgency-bar-fill" style="width:' + urgency + '%;background:' + color + '"></div></div>';
+
+    var actionHTML = "";
+    if (r.status === "submitted") {
+      actionHTML = '<div class="mt-3 flex gap-2">' +
+        '<button class="mark-progress-btn text-xs bg-stone-100 text-stone-700 px-3.5 py-2 rounded-lg hover:bg-stone-200 transition" data-id="' + r.id + '">Mark in progress</button>' +
+        '<label for="upload-' + r.id + '" class="text-xs bg-sage-700 text-white px-3.5 py-2 rounded-lg cursor-pointer hover:bg-sage-900 transition inline-flex items-center gap-1.5">📸 Resolve directly</label>' +
+        '<input type="file" accept="image/*" id="upload-' + r.id + '" class="hidden" />' +
+        '</div>';
+    } else if (r.status === "in_progress") {
+      actionHTML = '<div class="mt-3">' +
+        '<input type="file" accept="image/*" id="upload-' + r.id + '" class="hidden" />' +
+        '<label for="upload-' + r.id + '" class="text-xs bg-sage-700 text-white px-3.5 py-2 rounded-lg cursor-pointer hover:bg-sage-900 transition inline-flex items-center gap-1.5">📸 Mark resolved — upload after photo</label>' +
+        '</div>';
+    } else if (r.status === "pending_review") {
+      actionHTML = '<div class="mt-3 bg-peach-50 border border-peach-100 rounded-xl p-3">' +
+        '<p class="text-xs text-stone-700 mb-2">AI verification was inconclusive — confirm manually so the citizen gets a final answer.</p>' +
+        '<div class="flex gap-2">' +
+          '<button class="confirm-fixed-btn text-xs bg-sage-700 text-white px-3.5 py-1.5 rounded-lg hover:bg-sage-900 transition" data-id="' + r.id + '">Confirm fixed</button>' +
+          '<button class="dispute-fixed-btn text-xs border border-stone-300 text-stone-700 px-3.5 py-1.5 rounded-lg hover:border-clay-500 transition" data-id="' + r.id + '">Not actually fixed</button>' +
+        '</div></div>';
+    }
+
+    itemsHTML += '' +
+      '<div class="bg-white border border-stone-100 rounded-2xl p-5 shadow-soft card-lift">' +
+        '<div class="flex items-start gap-3">' +
+          '<div class="w-10 h-10 rounded-xl bg-stone-50 flex items-center justify-center text-lg shrink-0">' + icon + '</div>' +
+          '<div class="flex-1">' +
+            '<div class="flex items-center justify-between flex-wrap gap-1.5">' +
+              '<span class="font-medium text-stone-900 text-sm">' + (r.title || r.category || "Issue") + '</span>' +
+              '<div class="flex gap-2">' + priorityBadge + '<span class="text-xs px-2.5 py-1 rounded-full ' + pillClasses(meta.tone) + '">' + meta.label + '</span></div>' +
+            '</div>' +
+            '<p class="text-xs text-stone-500 mt-0.5">' + (r.description || "") + '</p>' +
+            addressLine +
+            urgencyBar +
+            '<p class="text-[10px] text-stone-400">Urgency score: ' + urgency + '/100</p>' +
+            escalateNote + actionHTML +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  var html = '' +
+    '<div class="max-w-4xl mx-auto fade-in">' +
+      '<div class="flex items-center justify-between mb-1">' +
+        '<h2 class="font-display text-2xl text-stone-900">Admin dashboard</h2>' +
+        '<select id="admin-filter" class="text-sm border border-stone-200 rounded-lg px-2.5 py-1.5 bg-white">' +
+          '<option value="all">All priorities</option><option value="critical">Critical</option>' +
+          '<option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>' +
+        '</select>' +
+      '</div>' +
+      '<p class="text-sm text-stone-500 mb-5">' + zoneNameById(currentUser.zoneId) + ' · sorted by urgency, most critical first</p>' +
+      adminStatsHTML() +
+      '<div class="space-y-3">' + itemsHTML + '</div>' +
+    '</div>';
+
+  document.getElementById("main-content").innerHTML = html;
+  document.getElementById("admin-filter").value = adminFilter;
+  document.getElementById("admin-filter").onchange = function (e) { adminFilter = e.target.value; drawAdminList(); };
+
+  var progressBtns = document.getElementsByClassName("mark-progress-btn");
+  for (i = 0; i < progressBtns.length; i++) {
+    progressBtns[i].onclick = function (e) {
+      var id = e.target.getAttribute("data-id");
+      apiMarkInProgress(id, function () {
+        for (var j = 0; j < allReports.length; j++) if (allReports[j].id === id) allReports[j].status = "in_progress";
+        showToast("Marked in progress", "info");
+        drawAdminList();
+      });
+    };
+  }
+
+  for (i = 0; i < filtered.length; i++) {
+    var rId = filtered[i].id;
+    var uploadInput = document.getElementById("upload-" + rId);
+    if (uploadInput) {
+      uploadInput.onchange = function (e) {
+        var targetId = e.target.id.replace("upload-", "");
+        var file = e.target.files[0];
+        showToast("Verifying fix…", "info");
+        apiMarkResolved(targetId, file, function (result) {
+          if (!result) { showToast("Could not verify right now — saved as pending review.", "error"); return; }
+          var j;
+          for (j = 0; j < allReports.length; j++) {
+            if (allReports[j].id === targetId) {
+              allReports[j].status = result.ai_result ? result.ai_result.final_status : allReports[j].status;
+              allReports[j].resolution_ai_result = result.ai_result;
+            }
+          }
+          showToast("Verification complete.", "success");
+          drawAdminList();
+        });
+      };
+    }
+  }
+
+  var confirmBtns = document.getElementsByClassName("confirm-fixed-btn");
+  for (i = 0; i < confirmBtns.length; i++) {
+    confirmBtns[i].onclick = function (e) { handleReconcile(e.target.getAttribute("data-id"), true); };
+  }
+  var disputeBtns = document.getElementsByClassName("dispute-fixed-btn");
+  for (i = 0; i < disputeBtns.length; i++) {
+    disputeBtns[i].onclick = function (e) { handleReconcile(e.target.getAttribute("data-id"), false); };
+  }
+}
+
+function handleReconcile(reportId, confirmed) {
+  apiReconcile(reportId, { admin_confirmed: confirmed, community_confirms: 0, community_disputes: 0 }, function (result) {
+    var finalStatus = confirmed ? "resolved" : "reopened";
+    if (result && result.final_status) finalStatus = result.final_status;
+    var j;
+    for (j = 0; j < allReports.length; j++) if (allReports[j].id === reportId) allReports[j].status = finalStatus;
+    showToast(confirmed ? "Marked resolved." : "Reopened for follow-up.", confirmed ? "success" : "info");
+    drawAdminList();
+  });
+}
+
+// ===========================================================================
+// BOOT
+// ===========================================================================
+checkBackend(function () { renderAuthScreen(); });
+</script>
+</body>
+</html>
